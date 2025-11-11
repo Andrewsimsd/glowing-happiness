@@ -2,7 +2,7 @@
 
 use std::io::{self, ErrorKind};
 use std::str::FromStr;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 use std::sync::{Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -285,14 +285,14 @@ pub fn parse_mac_address(input: &str) -> Result<MacAddr, MessengerError> {
 ///
 /// # Parameters
 /// * `receiver` - The data link receiver delivering raw Ethernet frames.
-/// * `sender` - The channel used to forward parsed [`EthernetMessage`] values.
+/// * `sender` - The bounded channel used to forward parsed [`EthernetMessage`] values.
 ///
 /// # Returns
 /// A [`JoinHandle`] that may be used to wait for the listener thread to finish.
 #[must_use]
 pub fn spawn_listener(
     mut receiver: Box<dyn DataLinkReceiver>,
-    sender: Sender<EthernetMessage>,
+    sender: SyncSender<EthernetMessage>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         loop {
@@ -306,10 +306,15 @@ pub fn spawn_listener(
                         if sender.send(message).is_err() {
                             break;
                         }
+                        thread::yield_now();
                     }
                 }
-                Err(err) if err.kind() == ErrorKind::WouldBlock => {}
-                Err(err) if err.kind() == ErrorKind::TimedOut => {}
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                    thread::yield_now();
+                }
+                Err(err) if err.kind() == ErrorKind::TimedOut => {
+                    thread::yield_now();
+                }
                 Err(err) => {
                     eprintln!("listener error: {err}");
                 }
@@ -690,7 +695,7 @@ mod tests {
             )),
         ];
         let receiver: Box<dyn DataLinkReceiver> = Box::new(StubReceiver::new(frames));
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(0);
 
         let handle = spawn_listener(receiver, tx);
         let message = rx
