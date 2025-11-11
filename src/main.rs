@@ -42,6 +42,11 @@ enum Command {
     },
 }
 
+/// Parses the command-line arguments and dispatches to the requested command.
+///
+/// This function serves as the entry point for the application. It delegates the
+/// heavy lifting to either [`run_worker`] or [`send_once`] depending on the
+/// selected subcommand.
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
@@ -58,6 +63,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
+/// Executes the worker loop that performs background work and listens for frames.
+///
+/// The worker registers a listener for the application's Ethernet frame type and
+/// periodically performs a unit of work when no frames are received. The
+/// [`Duration`] controls how long the worker waits before executing another work
+/// iteration.
+///
+/// # Arguments
+///
+/// * `interface_name` - The name of the network interface to bind to (for example `"eth0"`).
+/// * `work_delay` - The delay between work iterations when no frames are received.
+///
+/// # Errors
+///
+/// Returns an error if the interface cannot be located, the channel cannot be
+/// opened, or any of the underlying I/O operations fail.
 fn run_worker(interface_name: &str, work_delay: Duration) -> Result<(), Box<dyn Error>> {
     let interface = interface_by_name(interface_name)?;
     let (_sender, receiver) = open_channel(&interface)?;
@@ -91,6 +112,11 @@ fn run_worker(interface_name: &str, work_delay: Duration) -> Result<(), Box<dyn 
     Ok(())
 }
 
+/// Logs the contents of an incoming application-specific Ethernet frame.
+///
+/// The function renders the payload as UTF-8 (replacing invalid sequences) and
+/// prints the source, payload length, and textual representation to stdout. It is
+/// intended to be used as the callback from the worker loop.
 fn handle_message(message: &EthernetMessage) {
     let payload = message.payload_as_utf8_lossy();
     println!(
@@ -101,6 +127,21 @@ fn handle_message(message: &EthernetMessage) {
     );
 }
 
+/// Sends a single Ethernet frame containing the provided message payload.
+///
+/// The command resolves the source interface, parses the destination MAC
+/// address, and transmits the payload using the application's EtherType.
+///
+/// # Arguments
+///
+/// * `interface_name` - The interface used for transmitting the frame.
+/// * `destination` - The destination MAC address in standard hex notation.
+/// * `message` - The UTF-8 payload that should be sent to the destination.
+///
+/// # Errors
+///
+/// Returns an error if the interface cannot be opened, the MAC address is
+/// malformed, or the frame transmission fails.
 fn send_once(interface_name: &str, destination: &str, message: &str) -> Result<(), Box<dyn Error>> {
     let interface = interface_by_name(interface_name)?;
     let (mut sender, _receiver) = open_channel(&interface)?;
