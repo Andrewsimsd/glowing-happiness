@@ -71,8 +71,8 @@ The example focuses on Layer 2 communication, where frames are addressed by MAC 
 ### Advantages of MAC-Layer Messaging
 
 - **Lower latency and overhead:** Frames remain on the local link, avoiding IP headers, routing, and network address translation (NAT).
-- **Functionality without IP configuration:** Useful for bootstrapping protocols—such as ARP or DHCP—or for specialized control traffic before IP settings are available.
-- **Fine-grained hardware control:** Enables custom frame formats for diagnostics, industrial automation, or embedded use cases.
+- **Functionality without IP configuration:** Useful for specialized control traffic before IP settings are available.
+- **Fine-grained hardware control:** Enables custom frame formats for diagnostics, or embedded use cases.
 
 ### Drawbacks of MAC-Layer Messaging
 
