@@ -16,7 +16,7 @@ predicates = "=3.1"
 tempfile = "=3.23"
 
 [[bin]]
-name = "mct"
+name = "ether-demo"
 path = "src/main.rs"
 
 [profile.release]

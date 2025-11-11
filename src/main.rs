@@ -11,7 +11,7 @@ use glowing_happiness::{
 };
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(name = "ether-demo", author, version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

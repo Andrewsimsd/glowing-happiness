@@ -11,7 +11,7 @@ Running the examples typically requires administrative privileges or the
 `CAP_NET_RAW` capability because the program opens a raw data link socket.
 
 ```
-sudo setcap cap_net_raw+ep target/debug/mct
+sudo setcap cap_net_raw+ep target/debug/ether-demo
 ```
 
 ## Usage
@@ -25,7 +25,7 @@ cargo build
 ### Run the worker loop
 
 ```
-cargo run --bin mct -- run --interface eth0 --work-delay-ms 500
+cargo run --bin ether-demo -- run --interface eth0 --work-delay-ms 500
 ```
 
 The worker prints periodic work iterations and logs any inbound frames whose
@@ -34,7 +34,7 @@ EtherType matches the custom value used by this demo.
 ### Send a message
 
 ```
-cargo run --bin mct -- send \
+cargo run --bin ether-demo -- send \
   --interface eth0 \
   --destination aa:bb:cc:dd:ee:ff \
   --message "Hello from Rust"
