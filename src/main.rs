@@ -130,7 +130,7 @@ fn handle_message(message: &EthernetMessage) {
 /// Sends a single Ethernet frame containing the provided message payload.
 ///
 /// The command resolves the source interface, parses the destination MAC
-/// address, and transmits the payload using the application's EtherType.
+/// address, and transmits the payload using the application's `EtherType`.
 ///
 /// # Arguments
 ///
