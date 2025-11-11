@@ -22,10 +22,14 @@ sudo setcap cap_net_raw+ep target/debug/ether-demo
 
 Compile the binaries before running any examples:
 
+building for local machine
 ```
-cargo build
+cargo build --release
 ```
-
+building for pi
+```
+cargo build --release --target=aarch64-unknown-linux-gnu
+```
 ## Running the Examples
 
 ### Worker Loop
