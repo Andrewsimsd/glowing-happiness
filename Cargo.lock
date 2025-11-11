@@ -118,6 +118,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "glowing_happiness"
+version = "0.0.1"
+dependencies = [
+ "assert_cmd",
+ "predicates",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -305,18 +317,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5417783452c2be558477e104686f7de5dae53dba813c28435e0e70f82d9b04ee"
 dependencies = [
  "serde_core",
-]
-
-[[package]]
-name = "silver_monarch"
-version = "0.0.1"
-dependencies = [
- "assert_cmd",
- "predicates",
- "serde",
- "tempfile",
- "thiserror",
- "toml",
 ]
 
 [[package]]
