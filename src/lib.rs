@@ -29,25 +29,58 @@ type ChannelProvider =
     Box<dyn Fn(&NetworkInterface, Config) -> Result<DataLinkChannel, MessengerError> + Send + Sync>;
 type BufferAllocator = Box<dyn Fn(usize) -> Vec<u8> + Send + Sync>;
 
+/// # Summary
+/// Access the shared provider used to enumerate network interfaces.
+///
+/// # Returns
+/// A mutex guarding the injectable interface provider factory.
 fn interface_provider() -> &'static Mutex<InterfaceProvider> {
     static PROVIDER: OnceLock<Mutex<InterfaceProvider>> = OnceLock::new();
     PROVIDER.get_or_init(|| Mutex::new(Box::new(default_interface_provider)))
 }
 
+/// # Summary
+/// Obtain the shared provider responsible for creating data link channels.
+///
+/// # Returns
+/// A mutex protecting the configurable channel provider callback.
 fn channel_provider() -> &'static Mutex<ChannelProvider> {
     static PROVIDER: OnceLock<Mutex<ChannelProvider>> = OnceLock::new();
     PROVIDER.get_or_init(|| Mutex::new(Box::new(default_channel_provider)))
 }
 
+/// # Summary
+/// Access the shared allocator used to provision packet buffers.
+///
+/// # Returns
+/// A mutex wrapping the allocator callback so tests may override it.
 fn buffer_allocator() -> &'static Mutex<BufferAllocator> {
     static ALLOCATOR: OnceLock<Mutex<BufferAllocator>> = OnceLock::new();
     ALLOCATOR.get_or_init(|| Mutex::new(Box::new(default_buffer_allocator)))
 }
 
+/// # Summary
+/// Retrieve network interfaces using the platform default implementation.
+///
+/// # Returns
+/// A vector containing the interfaces reported by `pnet`.
 fn default_interface_provider() -> Vec<NetworkInterface> {
     datalink::interfaces()
 }
 
+/// # Summary
+/// Open a data link channel using the underlying `pnet` backend.
+///
+/// # Parameters
+/// * `interface` - The interface for which the channel should be opened.
+/// * `config` - The configuration describing how to configure the channel.
+///
+/// # Returns
+/// The sender and receiver pair when an Ethernet channel is available.
+///
+/// # Errors
+/// Returns [`MessengerError::UnsupportedChannel`] when the backend does not
+/// provide an Ethernet channel for the interface.
 fn default_channel_provider(
     interface: &NetworkInterface,
     config: Config,
@@ -62,16 +95,38 @@ fn default_channel_provider(
     }
 }
 
+/// # Summary
+/// Allocate a zeroed buffer sized for an Ethernet header and payload.
+///
+/// # Parameters
+/// * `payload_length` - The number of payload bytes that need to fit in the packet.
+///
+/// # Returns
+/// A vector large enough to hold a mutable Ethernet packet for the payload.
 fn default_buffer_allocator(payload_length: usize) -> Vec<u8> {
     vec![0_u8; MutableEthernetPacket::minimum_packet_size().saturating_add(payload_length)]
 }
 
+/// # Summary
+/// Collect the network interfaces from the currently configured provider.
+///
+/// # Returns
+/// A vector of interfaces, allowing tests to supply custom data.
 fn interfaces() -> Vec<NetworkInterface> {
     (interface_provider()
         .lock()
         .expect("interface provider poisoned"))()
 }
 
+/// # Summary
+/// Open a data link channel using the configurable provider abstraction.
+///
+/// # Parameters
+/// * `interface` - The interface for which the channel is desired.
+/// * `config` - The configuration applied when opening the channel.
+///
+/// # Returns
+/// The channel pair returned by the provider.
 fn open_channel_via_provider(
     interface: &NetworkInterface,
     config: Config,
@@ -81,6 +136,14 @@ fn open_channel_via_provider(
         .expect("channel provider poisoned"))(interface, config)
 }
 
+/// # Summary
+/// Allocate a packet buffer using the currently active allocator.
+///
+/// # Parameters
+/// * `payload_length` - The number of payload bytes needed for the packet.
+///
+/// # Returns
+/// A vector sized according to the allocator strategy.
 fn allocate_buffer(payload_length: usize) -> Vec<u8> {
     (buffer_allocator()
         .lock()
