@@ -1,6 +1,7 @@
 #![warn(clippy::pedantic)]
 
 use std::error::Error;
+use std::fmt;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
@@ -84,7 +85,7 @@ fn run_worker(interface_name: &str, work_delay: Duration) -> Result<(), Box<dyn 
     let (_sender, receiver) = open_channel(&interface)?;
 
     let (tx, rx) = mpsc::sync_channel::<EthernetMessage>(0);
-    let _listener = spawn_listener(receiver, tx);
+    let listener = spawn_listener(receiver, tx);
 
     println!(
         "Running work loop on interface '{interface_name}' with {work_delay:?} delay per iteration"
@@ -107,6 +108,18 @@ fn run_worker(interface_name: &str, work_delay: Duration) -> Result<(), Box<dyn 
                 break;
             }
         }
+    }
+
+    drop(rx);
+    if let Err(err) = listener.join() {
+        let message = if let Some(msg) = err.downcast_ref::<&str>() {
+            (*msg).to_string()
+        } else if let Some(msg) = err.downcast_ref::<String>() {
+            msg.clone()
+        } else {
+            "listener thread panicked".to_string()
+        };
+        return Err(Box::new(ListenerJoinError { message }));
     }
 
     Ok(())
@@ -147,7 +160,12 @@ fn send_once(interface_name: &str, destination: &str, message: &str) -> Result<(
     let (mut sender, _receiver) = open_channel(&interface)?;
     let destination_mac = parse_mac_address(destination)?;
 
-    send_message(&interface, &mut sender, destination_mac, message.as_bytes())?;
+    send_message(
+        &interface,
+        sender.as_mut(),
+        destination_mac,
+        message.as_bytes(),
+    )?;
     println!(
         "Sent {} bytes from '{interface_name}' to {destination_mac}",
         message.len()
@@ -155,3 +173,16 @@ fn send_once(interface_name: &str, destination: &str, message: &str) -> Result<(
 
     Ok(())
 }
+
+#[derive(Debug)]
+struct ListenerJoinError {
+    message: String,
+}
+
+impl fmt::Display for ListenerJoinError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "listener thread panicked: {}", self.message)
+    }
+}
+
+impl Error for ListenerJoinError {}

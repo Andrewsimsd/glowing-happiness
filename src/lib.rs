@@ -376,14 +376,14 @@ pub fn spawn_listener(
                         thread::yield_now();
                     }
                 }
-                Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                    thread::yield_now();
-                }
-                Err(err) if err.kind() == ErrorKind::TimedOut => {
+                Err(err)
+                    if err.kind() == ErrorKind::WouldBlock || err.kind() == ErrorKind::TimedOut =>
+                {
                     thread::yield_now();
                 }
                 Err(err) => {
                     eprintln!("listener error: {err}");
+                    break;
                 }
             }
         }
@@ -418,13 +418,13 @@ pub fn spawn_listener(
 /// let interface = interface_by_name("eth0")?;
 /// let (mut sender, mut receiver) = open_channel(&interface)?;
 /// let destination = parse_mac_address("AA:BB:CC:DD:EE:FF")?;
-/// send_message(&interface, &mut sender, destination, b"hello world")?;
+/// send_message(&interface, sender.as_mut(), destination, b"hello world")?;
 /// # drop(receiver);
 /// # Ok::<(), glowing_happiness::MessengerError>(())
 /// ```
 pub fn send_message(
     interface: &NetworkInterface,
-    data_link_sender: &mut Box<dyn DataLinkSender>,
+    data_link_sender: &mut dyn DataLinkSender,
     destination: MacAddr,
     payload: &[u8],
 ) -> Result<(), MessengerError> {
@@ -783,7 +783,7 @@ mod tests {
         let interface = test_interface("eth0", Some(MacAddr::new(0, 1, 2, 3, 4, 5)));
         let destination = MacAddr::new(5, 4, 3, 2, 1, 0);
 
-        send_message(&interface, &mut sender, destination, b"payload").expect("send succeeds");
+        send_message(&interface, sender.as_mut(), destination, b"payload").expect("send succeeds");
 
         let packets = packets.lock().unwrap();
         assert_eq!(packets.len(), 1);
@@ -801,8 +801,13 @@ mod tests {
         let mut sender: Box<dyn DataLinkSender> = Box::new(sender);
         let interface = test_interface("eth0", None);
 
-        let error = send_message(&interface, &mut sender, MacAddr::broadcast(), b"payload")
-            .expect_err("mac missing");
+        let error = send_message(
+            &interface,
+            sender.as_mut(),
+            MacAddr::broadcast(),
+            b"payload",
+        )
+        .expect_err("mac missing");
         assert!(matches!(error, MessengerError::MissingMacAddress(_)));
         assert!(packets.lock().unwrap().is_empty());
     }
@@ -814,8 +819,13 @@ mod tests {
         let mut sender: Box<dyn DataLinkSender> = Box::new(sender);
         let interface = test_interface("eth0", Some(MacAddr::zero()));
 
-        let error = send_message(&interface, &mut sender, MacAddr::broadcast(), b"payload")
-            .expect_err("unsupported");
+        let error = send_message(
+            &interface,
+            sender.as_mut(),
+            MacAddr::broadcast(),
+            b"payload",
+        )
+        .expect_err("unsupported");
         assert!(matches!(error, MessengerError::SendNotSupported));
     }
 
@@ -826,8 +836,13 @@ mod tests {
         let mut sender: Box<dyn DataLinkSender> = Box::new(sender);
         let interface = test_interface("eth0", Some(MacAddr::zero()));
 
-        let error = send_message(&interface, &mut sender, MacAddr::broadcast(), b"payload")
-            .expect_err("send failure");
+        let error = send_message(
+            &interface,
+            sender.as_mut(),
+            MacAddr::broadcast(),
+            b"payload",
+        )
+        .expect_err("send failure");
         assert!(matches!(error, MessengerError::SendFailure(_)));
     }
 
@@ -839,8 +854,13 @@ mod tests {
         let interface = test_interface("eth0", Some(MacAddr::zero()));
         let _guard = BufferAllocatorGuard::set(|_| Vec::new());
 
-        let error = send_message(&interface, &mut sender, MacAddr::broadcast(), b"payload")
-            .expect_err("allocation failure");
+        let error = send_message(
+            &interface,
+            sender.as_mut(),
+            MacAddr::broadcast(),
+            b"payload",
+        )
+        .expect_err("allocation failure");
         assert!(matches!(error, MessengerError::PacketAllocation));
     }
 }
