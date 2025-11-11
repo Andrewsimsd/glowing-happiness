@@ -35,6 +35,9 @@ Launch the worker to observe its periodic progress and inbound frame handling:
 ```
 cargo run --bin ether-demo -- run --interface eth0 --work-delay-ms 500
 ```
+using prebuilt binary
+```
+sudo ./ether-demo run --interface eth0 --work-delay-ms 500
 
 The worker prints its work iterations and logs any inbound frames whose EtherType matches the custom value used by this demo.
 
@@ -42,11 +45,16 @@ The worker prints its work iterations and logs any inbound frames whose EtherTyp
 
 Use the `send` subcommand to craft and transmit a single Ethernet frame to a peer on the same broadcast domain:
 
+using cargo
 ```
 cargo run --bin ether-demo -- send \
   --interface eth0 \
   --destination aa:bb:cc:dd:ee:ff \
-  --message "Hello from Rust"
+  --message "Hello from Sender"
+```
+using prebuilt binary
+```
+sudo ./ether-demo send --interface eth0 --destination aa:bb:cc:dd:ee:ff --message "hello from Sender"
 ```
 
 The sender emits the frame via the specified interface. The worker reacts to the inbound frame before resuming its counting loop.
