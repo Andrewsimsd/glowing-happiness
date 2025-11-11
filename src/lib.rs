@@ -15,6 +15,10 @@ use pnet::packet::ethernet::{EtherType, EthernetPacket, MutableEthernetPacket};
 use pnet::util::MacAddr;
 use thiserror::Error;
 
+/// The value 0x88B5 is one of a small block of EtherTypes that the IEEE set aside as “Local Experimental” identifiers.
+/// They are intended for in-development or private protocols so that engineers can test new frame formats on real networks
+/// without colliding with globally standardized EtherTypes. Because the number sits in that experimental range, it’s safe
+/// for an application to use internally while still remaining distinct from production protocols.
 pub const APPLICATION_ETHER_TYPE: EtherType = EtherType(0x88B5);
 
 /// Convenience alias for the sender and receiver pair returned by [`open_channel`].
