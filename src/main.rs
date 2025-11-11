@@ -62,7 +62,7 @@ fn run_worker(interface_name: &str, work_delay: Duration) -> Result<(), Box<dyn 
     let interface = interface_by_name(interface_name)?;
     let (_sender, receiver) = open_channel(&interface)?;
 
-    let (tx, rx) = mpsc::channel::<EthernetMessage>();
+    let (tx, rx) = mpsc::sync_channel::<EthernetMessage>(0);
     let _listener = spawn_listener(receiver, tx);
 
     println!(
