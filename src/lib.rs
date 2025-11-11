@@ -356,10 +356,6 @@ pub fn parse_mac_address(input: &str) -> Result<MacAddr, MessengerError> {
 ///
 /// # Returns
 /// A [`JoinHandle`] that may be used to wait for the listener thread to finish.
-fn cooperative_yield() {
-    thread::yield_now();
-}
-
 #[must_use]
 pub fn spawn_listener(
     mut receiver: Box<dyn DataLinkReceiver>,
@@ -377,13 +373,13 @@ pub fn spawn_listener(
                         if sender.send(message).is_err() {
                             break;
                         }
-                        cooperative_yield();
+                        thread::yield_now();
                     }
                 }
                 Err(err)
                     if err.kind() == ErrorKind::WouldBlock || err.kind() == ErrorKind::TimedOut =>
                 {
-                    cooperative_yield();
+                    thread::yield_now();
                 }
                 Err(err) => {
                     eprintln!("listener error: {err}");
