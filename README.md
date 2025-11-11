@@ -42,6 +42,7 @@ cargo run --bin ether-demo -- run --interface eth0 --work-delay-ms 500
 using prebuilt binary
 ```
 sudo ./ether-demo run --interface eth0 --work-delay-ms 500
+```
 
 The worker prints its work iterations and logs any inbound frames whose EtherType matches the custom value used by this demo.
 
