@@ -13,6 +13,8 @@ use pnet::datalink::{
 use pnet::packet::Packet;
 use pnet::packet::ethernet::{EtherType, EthernetPacket, MutableEthernetPacket};
 use pnet::util::MacAddr;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 
 /// The value 0x88B5 is one of a small block of `EtherTypes` that the IEEE set aside as “Local Experimental” identifiers.
@@ -242,6 +244,81 @@ impl EthernetMessage {
     }
 }
 
+/// Represents a structured payload that can transport text, structured data, or files.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PayloadEnvelope {
+    version: u8,
+    payload: PayloadKind,
+}
+
+impl PayloadEnvelope {
+    /// The version identifier embedded into serialized envelopes.
+    pub const CURRENT_VERSION: u8 = 1;
+
+    /// Construct an envelope containing plain UTF-8 text.
+    #[must_use]
+    pub fn text<T: Into<String>>(text: T) -> Self {
+        Self {
+            version: Self::CURRENT_VERSION,
+            payload: PayloadKind::Text(text.into()),
+        }
+    }
+
+    /// Construct an envelope containing arbitrary JSON data.
+    #[must_use]
+    pub fn json(value: Value) -> Self {
+        Self {
+            version: Self::CURRENT_VERSION,
+            payload: PayloadKind::Json(value),
+        }
+    }
+
+    /// Construct an envelope containing a binary file payload.
+    #[must_use]
+    pub fn file(filename: Option<String>, bytes: Vec<u8>) -> Self {
+        Self {
+            version: Self::CURRENT_VERSION,
+            payload: PayloadKind::File { filename, bytes },
+        }
+    }
+
+    /// Borrow the payload variant contained within the envelope.
+    #[must_use]
+    pub fn payload(&self) -> &PayloadKind {
+        &self.payload
+    }
+
+    /// Retrieve the encoded version identifier.
+    #[must_use]
+    pub fn version(&self) -> u8 {
+        self.version
+    }
+
+    /// Serialize the envelope into bytes for transport.
+    pub fn encode(&self) -> Result<Vec<u8>, MessengerError> {
+        bincode::serialize(self).map_err(|err| MessengerError::Serialization(err.to_string()))
+    }
+
+    /// Deserialize an envelope from bytes captured on the wire.
+    pub fn decode(bytes: &[u8]) -> Result<Self, MessengerError> {
+        bincode::deserialize(bytes).map_err(|err| MessengerError::Serialization(err.to_string()))
+    }
+}
+
+/// The different payload types that may be transmitted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PayloadKind {
+    /// UTF-8 text message.
+    Text(String),
+    /// Arbitrary JSON structure.
+    Json(Value),
+    /// Binary file contents and optional file name metadata.
+    File {
+        filename: Option<String>,
+        bytes: Vec<u8>,
+    },
+}
+
 #[derive(Debug, Error)]
 pub enum MessengerError {
     #[error("interface '{0}' not found")]
@@ -260,6 +337,8 @@ pub enum MessengerError {
     InvalidMacAddress(String),
     #[error("unsupported data link channel type")]
     UnsupportedChannel,
+    #[error("payload serialization error: {0}")]
+    Serialization(String),
 }
 
 /// # Summary
@@ -455,6 +534,30 @@ mod tests {
     use std::sync::mpsc;
     use std::sync::{Arc, Mutex as StdMutex};
     use std::time::Duration;
+
+    #[test]
+    fn payload_envelope_round_trips_text() {
+        let original = PayloadEnvelope::text("hello world");
+        let encoded = original.encode().expect("encode succeeds");
+        let decoded = PayloadEnvelope::decode(&encoded).expect("decode succeeds");
+        assert_eq!(decoded.payload(), original.payload());
+        assert_eq!(decoded.version(), PayloadEnvelope::CURRENT_VERSION);
+    }
+
+    #[test]
+    fn payload_envelope_round_trips_file() {
+        let original = PayloadEnvelope::file(Some("example.bin".into()), vec![1, 2, 3]);
+        let encoded = original.encode().expect("encode succeeds");
+        let decoded = PayloadEnvelope::decode(&encoded).expect("decode succeeds");
+        assert_eq!(decoded.payload(), original.payload());
+        match decoded.payload() {
+            PayloadKind::File { filename, bytes } => {
+                assert_eq!(filename.as_deref(), Some("example.bin"));
+                assert_eq!(bytes, &vec![1, 2, 3]);
+            }
+            other => panic!("unexpected payload kind: {other:?}"),
+        }
+    }
 
     #[derive(Clone)]
     enum FrameEvent {

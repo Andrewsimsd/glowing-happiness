@@ -48,21 +48,34 @@ The worker prints its work iterations and logs any inbound frames whose EtherTyp
 
 ### Sending a Custom Frame
 
-Use the `send` subcommand to craft and transmit a single Ethernet frame to a peer on the same broadcast domain:
+Use the `send` subcommand to craft and transmit a single Ethernet frame to a peer on the same broadcast domain. Payloads can be plain text, JSON structures, or arbitrary files:
 
 using cargo
 ```
+# simple text payload
 cargo run --bin ether-demo -- send \
   --interface eth0 \
   --destination aa:bb:cc:dd:ee:ff \
   --message "Hello from Sender"
+
+# JSON document describing a complex struct
+cargo run --bin ether-demo -- send \
+  --interface eth0 \
+  --destination aa:bb:cc:dd:ee:ff \
+  --json '{"command":"pause","metadata":{"priority":2}}'
+
+# binary file transfer (metadata name inferred from the path)
+cargo run --bin ether-demo -- send \
+  --interface eth0 \
+  --destination aa:bb:cc:dd:ee:ff \
+  --file ./diagnostics.tar.gz
 ```
 using prebuilt binary
 ```
 sudo ./ether-demo send --interface eth0 --destination aa:bb:cc:dd:ee:ff --message "hello from Sender"
 ```
 
-The sender emits the frame via the specified interface. The worker reacts to the inbound frame before resuming its counting loop.
+Each payload is wrapped inside a serialized envelope that records whether the message is text, JSON, or file data. When sending files you may also provide `--file-name` to override the inferred metadata name. The worker logs the decoded envelope metadata when a frame arrives, providing visibility into complex structs and file transfers before resuming its counting loop.
 
 ## MAC-Layer Messaging vs. IP-Layer Messaging
 
