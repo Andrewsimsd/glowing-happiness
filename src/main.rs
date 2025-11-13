@@ -2,14 +2,17 @@
 
 use std::error::Error;
 use std::fmt;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use glowing_happiness::{
-    EthernetMessage, interface_by_name, open_channel, parse_mac_address, send_message,
-    spawn_listener,
+    EthernetMessage, PayloadEnvelope, PayloadKind, interface_by_name, open_channel,
+    parse_mac_address, send_message, spawn_listener,
 };
+use serde_json::Value;
 
 #[derive(Parser, Debug)]
 #[command(name = "ether-demo", author, version, about, long_about = None)]
@@ -37,9 +40,18 @@ enum Command {
         /// Destination MAC address (e.g. "aa:bb:cc:dd:ee:ff").
         #[arg(long)]
         destination: String,
-        /// Message payload to send.
-        #[arg(long)]
-        message: String,
+        /// Plain-text message payload to send.
+        #[arg(long, conflicts_with_all = ["json", "file"])]
+        message: Option<String>,
+        /// JSON document describing complex structured data to send.
+        #[arg(long, conflicts_with_all = ["message", "file"])]
+        json: Option<String>,
+        /// Path to a file whose bytes should be transmitted.
+        #[arg(long, conflicts_with_all = ["message", "json"], value_name = "PATH")]
+        file: Option<PathBuf>,
+        /// Optional file name metadata to attach when using --file.
+        #[arg(long, requires = "file")]
+        file_name: Option<String>,
     },
 }
 
@@ -60,7 +72,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             interface,
             destination,
             message,
-        } => send_once(&interface, &destination, &message),
+            json,
+            file,
+            file_name,
+        } => {
+            let envelope = build_payload_envelope(message, json, file, file_name)?;
+            send_once(&interface, &destination, envelope)
+        }
     }
 }
 
@@ -131,13 +149,24 @@ fn run_worker(interface_name: &str, work_delay: Duration) -> Result<(), Box<dyn 
 /// prints the source, payload length, and textual representation to stdout. It is
 /// intended to be used as the callback from the worker loop.
 fn handle_message(message: &EthernetMessage) {
-    let payload = message.payload_as_utf8_lossy();
-    println!(
-        "Received Ethernet frame from {} with {} bytes: {}",
-        message.source(),
-        message.payload().len(),
-        payload
-    );
+    match PayloadEnvelope::decode(message.payload()) {
+        Ok(envelope) => {
+            let (label, details) = payload_description(envelope.payload());
+            println!(
+                "Received {label} payload (v{}) from {} with {} bytes: {details}",
+                envelope.version(),
+                message.source(),
+                message.payload().len()
+            );
+        }
+        Err(err) => {
+            println!(
+                "Received raw frame from {} but failed to decode payload ({} bytes): {err}",
+                message.source(),
+                message.payload().len()
+            );
+        }
+    }
 }
 
 /// Sends a single Ethernet frame containing the provided message payload.
@@ -155,23 +184,62 @@ fn handle_message(message: &EthernetMessage) {
 ///
 /// Returns an error if the interface cannot be opened, the MAC address is
 /// malformed, or the frame transmission fails.
-fn send_once(interface_name: &str, destination: &str, message: &str) -> Result<(), Box<dyn Error>> {
+fn send_once(
+    interface_name: &str,
+    destination: &str,
+    payload: PayloadEnvelope,
+) -> Result<(), Box<dyn Error>> {
     let interface = interface_by_name(interface_name)?;
     let (mut sender, _receiver) = open_channel(&interface)?;
     let destination_mac = parse_mac_address(destination)?;
+    let payload_bytes = payload.encode()?;
 
-    send_message(
-        &interface,
-        sender.as_mut(),
-        destination_mac,
-        message.as_bytes(),
-    )?;
+    send_message(&interface, sender.as_mut(), destination_mac, &payload_bytes)?;
+    let (label, details) = payload_description(payload.payload());
     println!(
-        "Sent {} bytes from '{interface_name}' to {destination_mac}",
-        message.len()
+        "Sent {label} payload ({details}) from '{interface_name}' to {destination_mac} using {} bytes",
+        payload_bytes.len()
     );
 
     Ok(())
+}
+
+fn build_payload_envelope(
+    message: Option<String>,
+    json: Option<String>,
+    file: Option<PathBuf>,
+    file_name: Option<String>,
+) -> Result<PayloadEnvelope, Box<dyn Error>> {
+    if let Some(text) = message {
+        return Ok(PayloadEnvelope::text(text));
+    }
+
+    if let Some(json_text) = json {
+        let value: Value = serde_json::from_str(&json_text)?;
+        return Ok(PayloadEnvelope::json(value));
+    }
+
+    if let Some(path) = file {
+        let data = fs::read(&path)?;
+        let name = file_name.or_else(|| {
+            path.file_name()
+                .map(|value| value.to_string_lossy().into_owned())
+        });
+        return Ok(PayloadEnvelope::file(name, data));
+    }
+
+    Err("one of --message, --json, or --file must be provided".into())
+}
+
+fn payload_description(payload: &PayloadKind) -> (&'static str, String) {
+    match payload {
+        PayloadKind::Text(text) => ("text", text.clone()),
+        PayloadKind::Json(value) => ("json", value.to_string()),
+        PayloadKind::File { filename, bytes } => {
+            let name = filename.as_deref().unwrap_or("<unnamed>");
+            ("file", format!("{name} ({} bytes)", bytes.len()))
+        }
+    }
 }
 
 #[derive(Debug)]
