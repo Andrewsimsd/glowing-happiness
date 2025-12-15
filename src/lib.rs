@@ -1,5 +1,35 @@
 #![warn(clippy::pedantic)]
-
+//! # Glowing Happiness Library
+//!
+//! ## Overview
+//! A lightweight UDP messaging library that wraps datagrams in a typed `PayloadEnvelope`
+//! so callers can move text, JSON, or binary file bytes across the network with minimal
+//! ceremony. It is intentionally dependency-light and favors predictable, testable
+//! behaviors suitable for demos or small control-plane utilities.
+//!
+//! ## Key Concepts
+//! - [`PayloadEnvelope`] defines a forward-compatible container with an explicit version.
+//! - [`PayloadKind`] enumerates the supported payload variants.
+//! - [`spawn_listener`] runs a background receive loop and forwards decoded frames.
+//! - [`send_message`] transmits raw payload bytes over UDP.
+//!
+//! ## Error Handling
+//! All fallible APIs return [`MessengerError`], which documents the concrete operation that
+//! failed (bind, send, receive, parse, or serialization). Use the `Display` impls for
+//! end-user messages and pattern match when programmatic recovery is required.
+//!
+//! ## Concurrency Model
+//! `spawn_listener` is a thin wrapper over `std::thread::spawn` that reads into a
+//! reusable buffer and pushes messages through a `SyncSender`. The caller owns the
+//! channel, making backpressure explicit via bounded channels when needed.
+//!
+//! ## Testing
+//! Integration-style unit tests run against loopback sockets to mock Ethernet/UDP traffic
+//! without external dependencies. Payload serialization is round-tripped to ensure
+//! compatibility, and listener behavior is validated for both graceful shutdown and
+//! channel disconnect scenarios.
+//!
+use std::fmt;
 use std::io::{self, ErrorKind};
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::mpsc::SyncSender;
@@ -98,11 +128,19 @@ impl PayloadEnvelope {
     }
 
     /// Serialize the envelope into bytes for transport.
+    ///
+    /// # Errors
+    /// Returns [`MessengerError::Serialization`] if the payload cannot be encoded using
+    /// `bincode` (e.g., unsupported type or version mismatch).
     pub fn encode(&self) -> Result<Vec<u8>, MessengerError> {
         bincode::serialize(self).map_err(|err| MessengerError::Serialization(err.to_string()))
     }
 
     /// Deserialize an envelope from bytes captured on the wire.
+    ///
+    /// # Errors
+    /// Returns [`MessengerError::Serialization`] if the provided bytes are not a valid
+    /// `PayloadEnvelope` produced by this library.
     pub fn decode(bytes: &[u8]) -> Result<Self, MessengerError> {
         bincode::deserialize(bytes).map_err(|err| MessengerError::Serialization(err.to_string()))
     }
@@ -120,6 +158,19 @@ pub enum PayloadKind {
         filename: Option<String>,
         bytes: Vec<u8>,
     },
+}
+
+impl fmt::Display for PayloadKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Text(text) => write!(f, "text: {text}"),
+            Self::Json(value) => write!(f, "json: {value}"),
+            Self::File { filename, bytes } => {
+                let name = filename.as_deref().unwrap_or("<unnamed>");
+                write!(f, "file: {name} ({} bytes)", bytes.len())
+            }
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -140,6 +191,9 @@ pub enum MessengerError {
 ///
 /// The socket is configured with a short read timeout so listener loops may yield
 /// periodically when no datagrams are available.
+///
+/// # Errors
+/// Returns [`MessengerError::SocketBind`] when binding or configuring the socket fails.
 pub fn bind_socket<A: ToSocketAddrs>(addr: A) -> Result<UdpSocket, MessengerError> {
     let socket = UdpSocket::bind(addr).map_err(MessengerError::SocketBind)?;
     socket
@@ -149,6 +203,10 @@ pub fn bind_socket<A: ToSocketAddrs>(addr: A) -> Result<UdpSocket, MessengerErro
 }
 
 /// Parse a socket address string into a [`SocketAddr`].
+///
+/// # Errors
+/// Returns [`MessengerError::InvalidSocketAddress`] when the string cannot be parsed or
+/// resolved into a socket address.
 pub fn parse_socket_address(input: &str) -> Result<SocketAddr, MessengerError> {
     input
         .to_socket_addrs()
@@ -161,9 +219,14 @@ pub fn parse_socket_address(input: &str) -> Result<SocketAddr, MessengerError> {
 /// provided channel.
 ///
 /// # Must Use
-/// The returned handle should be joined or detached to avoid leaking threads.
+/// The returned handle should be joined or detached to avoid leaking threads. The
+/// handle resolves to `Result<(), MessengerError>` to surface socket-level failures
+/// (e.g., receive errors) to the caller.
 #[must_use]
-pub fn spawn_listener(socket: UdpSocket, sender: SyncSender<UdpMessage>) -> JoinHandle<()> {
+pub fn spawn_listener(
+    socket: UdpSocket,
+    sender: SyncSender<UdpMessage>,
+) -> JoinHandle<Result<(), MessengerError>> {
     thread::spawn(move || {
         let mut buffer = vec![0_u8; 65_507];
         loop {
@@ -171,7 +234,7 @@ pub fn spawn_listener(socket: UdpSocket, sender: SyncSender<UdpMessage>) -> Join
                 Ok((len, addr)) => {
                     let payload = buffer[..len].to_vec();
                     if sender.send(UdpMessage::new(addr, payload)).is_err() {
-                        break;
+                        return Ok(());
                     }
                     thread::yield_now();
                 }
@@ -181,8 +244,7 @@ pub fn spawn_listener(socket: UdpSocket, sender: SyncSender<UdpMessage>) -> Join
                     thread::yield_now();
                 }
                 Err(err) => {
-                    eprintln!("listener error: {err}");
-                    break;
+                    return Err(MessengerError::SocketReceive(err));
                 }
             }
         }
@@ -190,6 +252,9 @@ pub fn spawn_listener(socket: UdpSocket, sender: SyncSender<UdpMessage>) -> Join
 }
 
 /// Send an application-specific UDP payload to a destination socket address.
+///
+/// # Errors
+/// Returns [`MessengerError::SocketSend`] if the underlying socket send fails.
 pub fn send_message(
     socket: &UdpSocket,
     destination: SocketAddr,
@@ -283,7 +348,10 @@ mod tests {
         drop(rx);
         // Wake the listener so it observes the disconnected channel and exits cleanly.
         let _ = send_socket.send_to(&[], peer_addr);
-        handle.join().expect("listener should exit cleanly");
+        handle
+            .join()
+            .expect("listener thread should not panic")
+            .expect("listener should exit cleanly");
     }
 
     #[test]
@@ -298,5 +366,77 @@ mod tests {
         let (len, source) = receiver.recv_from(&mut buffer).expect("receive");
         assert_eq!(&buffer[..len], b"payload");
         assert_eq!(source, sender.local_addr().expect("sender addr"));
+    }
+
+    #[test]
+    fn payload_kind_display_formats_variants() {
+        let text = PayloadKind::Text("hello".into());
+        assert_eq!(text.to_string(), "text: hello");
+
+        let json = PayloadKind::Json(serde_json::json!({"k": "v"}));
+        assert_eq!(json.to_string(), "json: {\"k\":\"v\"}");
+
+        let file = PayloadKind::File {
+            filename: Some("file.bin".into()),
+            bytes: vec![1, 2, 3, 4],
+        };
+        assert_eq!(file.to_string(), "file: file.bin (4 bytes)");
+
+        let unnamed = PayloadKind::File {
+            filename: None,
+            bytes: vec![0; 2],
+        };
+        assert_eq!(unnamed.to_string(), "file: <unnamed> (2 bytes)");
+    }
+
+    #[test]
+    fn payload_envelope_decode_rejects_invalid_data() {
+        let bytes = b"not a valid envelope";
+        let error = PayloadEnvelope::decode(bytes).expect_err("decode should fail");
+        match error {
+            MessengerError::Serialization(_) => {}
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bind_socket_sets_read_timeout() {
+        let socket = bind_socket("127.0.0.1:0").expect("bind socket");
+        let timeout = socket
+            .read_timeout()
+            .expect("read timeout available")
+            .expect("read timeout should be set");
+        assert_eq!(timeout, Duration::from_millis(200));
+    }
+
+    #[test]
+    fn spawn_listener_processes_multiple_datagrams_in_order() {
+        let socket = bind_socket("127.0.0.1:0").expect("bind socket");
+        let peer_addr = socket.local_addr().expect("local addr");
+        let send_socket = socket.try_clone().expect("clone socket");
+        let (tx, rx) = mpsc::sync_channel::<UdpMessage>(8);
+
+        let handle = spawn_listener(socket, tx);
+        for payload in ["one", "two", "three"] {
+            send_socket
+                .send_to(payload.as_bytes(), peer_addr)
+                .expect("send datagram");
+        }
+
+        let mut received = Vec::new();
+        for _ in 0..3 {
+            let msg = rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("message available");
+            received.push(msg.payload_as_utf8_lossy());
+        }
+        assert_eq!(received, ["one", "two", "three"]);
+
+        drop(rx);
+        let _ = send_socket.send_to(&[], peer_addr);
+        handle
+            .join()
+            .expect("listener thread should not panic")
+            .expect("listener should exit cleanly");
     }
 }

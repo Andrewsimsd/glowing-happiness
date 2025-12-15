@@ -71,3 +71,20 @@ using prebuilt binary
 
 Each payload is wrapped inside a serialized envelope that records whether the message is text, JSON, or file data. When sending files you may also provide `--file-name` to override the inferred metadata name. The worker logs the decoded envelope metadata when a datagram arrives, providing visibility into complex structs and file transfers before resuming its counting loop.
 Because UDP traffic is routable, you can now reach peers beyond the local broadcast domain so long as intermediate firewalls permit the traffic. Keep in mind that UDP delivery is not guaranteed; choose ports and addresses appropriate for your network environment.
+
+## Architecture
+
+- `src/lib.rs` exposes the UDP primitives (`bind_socket`, `send_message`, `spawn_listener`) plus typed payload envelopes for text, JSON, and file transfers.
+- `src/main.rs` provides the `ether-demo` CLI with `run` and `send` subcommands. Payload selection is enforced by clap via an argument group so exactly one payload type is chosen.
+- Errors are consolidated in `MessengerError` (library) and `AppError` (CLI) to keep surface area predictable and log-friendly.
+
+## Error Handling
+
+- Socket binding/sending/receiving failures bubble up as `MessengerError` variants with contextual messages.
+- Serialization issues during payload encode/decode are reported as `Serialization` variants and surfaced by the CLI without panics.
+- Listener thread failures are detected at join time, allowing the worker loop to exit loudly instead of silently dropping packets.
+
+## Testing and Quality
+
+- Unit tests exercise payload round-trips, display formatting, error propagation, and listener behavior using loopback sockets to mock Ethernet/UDP traffic without external dependencies.
+- Clippy is set to `pedantic` at the crate root to encourage idiomatic, professional code quality; CI/builds should run `cargo clippy --all-targets --all-features` alongside `cargo test`.
