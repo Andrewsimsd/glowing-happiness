@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use glowing_happiness::{
-    EthernetMessage, PayloadEnvelope, PayloadKind, interface_by_name, open_channel,
-    parse_mac_address, send_message, spawn_listener,
+    PayloadEnvelope, PayloadKind, UdpMessage, bind_socket, parse_socket_address, send_message,
+    spawn_listener,
 };
 use serde_json::Value;
 
@@ -23,21 +23,21 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Run the worker loop that performs work and reacts to Ethernet messages.
+    /// Run the worker loop that performs work and reacts to UDP messages.
     Run {
-        /// The network interface to bind to (e.g. "eth0").
-        #[arg(long)]
-        interface: String,
+        /// The address to bind to (e.g. "0.0.0.0:42069").
+        #[arg(long, default_value = "0.0.0.0:42069")]
+        bind: String,
         /// Delay between work iterations in milliseconds.
         #[arg(long, default_value_t = 500)]
         work_delay_ms: u64,
     },
-    /// Send a single Ethernet frame to a peer.
+    /// Send a single UDP datagram to a peer.
     Send {
-        /// The network interface to send from (e.g. "eth0").
-        #[arg(long)]
-        interface: String,
-        /// Destination MAC address (e.g. "aa:bb:cc:dd:ee:ff").
+        /// The address to bind locally (e.g. "0.0.0.0:0").
+        #[arg(long, default_value = "0.0.0.0:0")]
+        bind: String,
+        /// Destination socket address (e.g. "192.168.1.10:42069").
         #[arg(long)]
         destination: String,
         /// Plain-text message payload to send.
@@ -55,21 +55,16 @@ enum Command {
     },
 }
 
-/// Parses the command-line arguments and dispatches to the requested command.
-///
-/// This function serves as the entry point for the application. It delegates the
-/// heavy lifting to either [`run_worker`] or [`send_once`] depending on the
-/// selected subcommand.
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
     match cli.command {
         Command::Run {
-            interface,
+            bind,
             work_delay_ms,
-        } => run_worker(&interface, Duration::from_millis(work_delay_ms)),
+        } => run_worker(&bind, Duration::from_millis(work_delay_ms)),
         Command::Send {
-            interface,
+            bind,
             destination,
             message,
             json,
@@ -77,41 +72,19 @@ fn main() -> Result<(), Box<dyn Error>> {
             file_name,
         } => {
             let envelope = build_payload_envelope(message, json, file, file_name)?;
-            send_once(&interface, &destination, envelope)
+            send_once(&bind, &destination, envelope)
         }
     }
 }
 
-/// Executes the worker loop that performs background work and listens for frames.
-///
-/// The worker registers a listener for the application's Ethernet frame type and
-/// periodically performs a unit of work when no frames are received. The
-/// [`Duration`] controls how long the worker waits before executing another work
-/// iteration.
-///
-/// # Arguments
-///
-/// * `interface_name` - The name of the network interface to bind to (for example `"eth0"`).
-/// * `work_delay` - The delay between work iterations when no frames are received.
-///
-/// # Errors
-///
-/// Returns an error if the interface cannot be located, the channel cannot be
-/// opened, or any of the underlying I/O operations fail.
-fn run_worker(interface_name: &str, work_delay: Duration) -> Result<(), Box<dyn Error>> {
-    let interface = interface_by_name(interface_name)?;
-    let (_sender, receiver) = open_channel(&interface)?;
+fn run_worker(bind_addr: &str, work_delay: Duration) -> Result<(), Box<dyn Error>> {
+    let socket = bind_socket(bind_addr)?;
+    let local_addr = socket.local_addr()?;
+    let (tx, rx) = mpsc::sync_channel::<UdpMessage>(0);
+    let listener = spawn_listener(socket, tx);
 
-    let (tx, rx) = mpsc::sync_channel::<EthernetMessage>(0);
-    let listener = spawn_listener(receiver, tx);
-
-    println!(
-        "Running work loop on interface '{interface_name}' with {work_delay:?} delay per iteration"
-    );
-    println!(
-        "Waiting for Ethernet frames with type 0x{:04x}",
-        glowing_happiness::APPLICATION_ETHER_TYPE.0
-    );
+    println!("Running work loop bound to {local_addr} with {work_delay:?} delay per iteration");
+    println!("Waiting for UDP datagrams on {local_addr}");
 
     let mut counter: u64 = 0;
     loop {
@@ -143,12 +116,7 @@ fn run_worker(interface_name: &str, work_delay: Duration) -> Result<(), Box<dyn 
     Ok(())
 }
 
-/// Logs the contents of an incoming application-specific Ethernet frame.
-///
-/// The function renders the payload as UTF-8 (replacing invalid sequences) and
-/// prints the source, payload length, and textual representation to stdout. It is
-/// intended to be used as the callback from the worker loop.
-fn handle_message(message: &EthernetMessage) {
+fn handle_message(message: &UdpMessage) {
     match PayloadEnvelope::decode(message.payload()) {
         Ok(envelope) => {
             let (label, details) = payload_description(envelope.payload());
@@ -161,7 +129,7 @@ fn handle_message(message: &EthernetMessage) {
         }
         Err(err) => {
             println!(
-                "Received raw frame from {} but failed to decode payload ({} bytes): {err}",
+                "Received raw datagram from {} but failed to decode payload ({} bytes): {err}",
                 message.source(),
                 message.payload().len()
             );
@@ -169,35 +137,20 @@ fn handle_message(message: &EthernetMessage) {
     }
 }
 
-/// Sends a single Ethernet frame containing the provided message payload.
-///
-/// The command resolves the source interface, parses the destination MAC
-/// address, and transmits the payload using the application's `EtherType`.
-///
-/// # Arguments
-///
-/// * `interface_name` - The interface used for transmitting the frame.
-/// * `destination` - The destination MAC address in standard hex notation.
-/// * `message` - The UTF-8 payload that should be sent to the destination.
-///
-/// # Errors
-///
-/// Returns an error if the interface cannot be opened, the MAC address is
-/// malformed, or the frame transmission fails.
 fn send_once(
-    interface_name: &str,
+    bind_addr: &str,
     destination: &str,
     payload: PayloadEnvelope,
 ) -> Result<(), Box<dyn Error>> {
-    let interface = interface_by_name(interface_name)?;
-    let (mut sender, _receiver) = open_channel(&interface)?;
-    let destination_mac = parse_mac_address(destination)?;
+    let socket = bind_socket(bind_addr)?;
+    let destination_addr = parse_socket_address(destination)?;
     let payload_bytes = payload.encode()?;
 
-    send_message(&interface, sender.as_mut(), destination_mac, &payload_bytes)?;
+    send_message(&socket, destination_addr, &payload_bytes)?;
     let (label, details) = payload_description(payload.payload());
     println!(
-        "Sent {label} payload ({details}) from '{interface_name}' to {destination_mac} using {} bytes",
+        "Sent {label} payload ({details}) from '{}' to {destination_addr} using {} bytes",
+        socket.local_addr()?,
         payload_bytes.len()
     );
 
@@ -210,25 +163,27 @@ fn build_payload_envelope(
     file: Option<PathBuf>,
     file_name: Option<String>,
 ) -> Result<PayloadEnvelope, Box<dyn Error>> {
-    if let Some(text) = message {
-        return Ok(PayloadEnvelope::text(text));
+    if let Some(message) = message {
+        return Ok(PayloadEnvelope::text(message));
     }
 
-    if let Some(json_text) = json {
-        let value: Value = serde_json::from_str(&json_text)?;
+    if let Some(json) = json {
+        let value: Value = serde_json::from_str(&json)?;
         return Ok(PayloadEnvelope::json(value));
     }
 
     if let Some(path) = file {
-        let data = fs::read(&path)?;
+        let bytes = fs::read(&path)?;
         let name = file_name.or_else(|| {
             path.file_name()
-                .map(|value| value.to_string_lossy().into_owned())
+                .map(|name| name.to_string_lossy().into_owned())
         });
-        return Ok(PayloadEnvelope::file(name, data));
+        return Ok(PayloadEnvelope::file(name, bytes));
     }
 
-    Err("one of --message, --json, or --file must be provided".into())
+    Err(Box::new(UserInputError(
+        "one of --message, --json, or --file is required".into(),
+    )))
 }
 
 fn payload_description(payload: &PayloadKind) -> (&'static str, String) {
@@ -236,7 +191,7 @@ fn payload_description(payload: &PayloadKind) -> (&'static str, String) {
         PayloadKind::Text(text) => ("text", text.clone()),
         PayloadKind::Json(value) => ("json", value.to_string()),
         PayloadKind::File { filename, bytes } => {
-            let name = filename.as_deref().unwrap_or("<unnamed>");
+            let name = filename.clone().unwrap_or_else(|| "<unnamed>".into());
             ("file", format!("{name} ({} bytes)", bytes.len()))
         }
     }
@@ -249,8 +204,19 @@ struct ListenerJoinError {
 
 impl fmt::Display for ListenerJoinError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "listener thread panicked: {}", self.message)
+        write!(f, "{message}", message = self.message)
     }
 }
 
 impl Error for ListenerJoinError {}
+
+#[derive(Debug)]
+struct UserInputError(String);
+
+impl fmt::Display for UserInputError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{message}", message = self.0)
+    }
+}
+
+impl Error for UserInputError {}
