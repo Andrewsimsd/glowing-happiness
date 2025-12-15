@@ -4,7 +4,8 @@ use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::mpsc::{self, TryRecvError};
+use std::thread;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
@@ -80,24 +81,37 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn run_worker(bind_addr: &str, work_delay: Duration) -> Result<(), Box<dyn Error>> {
     let socket = bind_socket(bind_addr)?;
     let local_addr = socket.local_addr()?;
-    let (tx, rx) = mpsc::sync_channel::<UdpMessage>(0);
+    let (tx, rx) = mpsc::sync_channel::<UdpMessage>(128);
     let listener = spawn_listener(socket, tx);
 
     println!("Running work loop bound to {local_addr} with {work_delay:?} delay per iteration");
     println!("Waiting for UDP datagrams on {local_addr}");
 
     let mut counter: u64 = 0;
-    loop {
-        match rx.recv_timeout(work_delay) {
-            Ok(message) => handle_message(&message),
-            Err(RecvTimeoutError::Timeout) => {
-                counter = counter.wrapping_add(1);
-                println!("Work iteration {counter}");
+    'work: loop {
+        counter = counter.wrapping_add(1);
+        println!("Work iteration {counter}: performing simulated work");
+        thread::sleep(work_delay);
+
+        let mut processed = 0;
+        loop {
+            match rx.try_recv() {
+                Ok(message) => {
+                    processed += 1;
+                    handle_message(&message);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    println!("Listener disconnected; exiting work loop");
+                    break 'work;
+                }
             }
-            Err(RecvTimeoutError::Disconnected) => {
-                println!("Listener disconnected; exiting work loop");
-                break;
-            }
+        }
+
+        if processed > 0 {
+            println!("Processed {processed} message(s) from buffer");
+        } else {
+            println!("No buffered messages this cycle");
         }
     }
 
